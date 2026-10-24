@@ -31,7 +31,12 @@ import { OrbitControls } from './vendor/OrbitControls.js';
 // `creature`). The clips drive his body; SPRINGS drive the spikes, every frame after the clip: inertia, a pull back to rest, a
 // little gravity, and a sphere round his head they cannot pass through, so spikes that already lie flat rest on him.
 // Tap the floor and he walks (near) or runs (far) there. `window.cr` has everything live.
-const BUILD = 2;
+// THE MOUTH (build 3, blender-addons/pipeline/visemes.py): his mouth was a closed slot; it is cut open at the back of the slot (a
+// minimum cut, so the lips always part), a dark cavity and a tongue sit behind it, and 11 shape keys move it -- jawOpen, the
+// visemes AI E O U MBP FV L etc, and smile / frown. TALK speaks a line in the browser's own voice (pitched up, no keys) and drives
+// the visemes from the letters of each word as it is spoken; MIC drives the jaw from your voice's loudness. The real voice
+// (speech to text -> a Claude brain -> ElevenLabs) is a later step and needs a server for the keys.
+const BUILD = 3;
 const SPRING = { on: 1, stiff: 3.2, drag: .38, grav: .9, height: 1.8, headR: 1.15, maxBend: .7 };
 const ACTS = ['wave', 'laugh', 'dance', 'chicken', 'excited', 'clap', 'talk', 'shrug', 'jump', 'victory', 'yawn', 'think'];
 const LOOPS = new Set(['idle', 'walk', 'run']);
@@ -52,13 +57,14 @@ floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
 const ring = new THREE.Mesh(new THREE.RingGeometry(1.1, 1.13, 96), new THREE.MeshBasicMaterial({ color: 0xd5d9df })); ring.rotation.x = -Math.PI / 2; ring.position.y = .002; scene.add(ring);
 
 const root = new THREE.Group(); scene.add(root);
-let model, mixer, acts = {}, cur = 'idle', bones = {}, chains = [], headBone = null, k = 1;
+let model, mixer, acts = {}, cur = 'idle', bones = {}, chains = [], headBone = null, k = 1, morphs = [];
+const VIS = ['jawOpen', 'AI', 'E', 'O', 'U', 'MBP', 'FV', 'L', 'etc', 'smile', 'frown'], mouth = Object.fromEntries(VIS.map(n => [n, 0])), want = Object.fromEntries(VIS.map(n => [n, 0]));
 const ui = document.getElementById('ui');
 function button(label, fn, cls) { const b = document.createElement('button'); b.textContent = label; if (cls) b.className = cls; b.onclick = () => fn(b); ui.appendChild(b); return b; }
 
 new GLTFLoader().setDRACOLoader(new DRACOLoader().setDecoderPath('./draco/')).load('./models/creature.glb?v=' + BUILD, g => {
   model = g.scene; const bb = new THREE.Box3();
-  model.traverse(o => { if (o.isBone) bones[o.name] = o; if (o.isMesh) { o.castShadow = true; o.frustumCulled = false; o.geometry.computeBoundingBox(); bb.union(o.geometry.boundingBox); } });
+  model.traverse(o => { if (o.isBone) bones[o.name] = o; if (o.isMesh && o.morphTargetDictionary) morphs.push(o); if (o.isMesh) { o.castShadow = true; o.frustumCulled = false; o.geometry.computeBoundingBox(); bb.union(o.geometry.boundingBox); } });
   k = SPRING.height / (bb.max.y - bb.min.y || .68); model.scale.setScalar(k); root.add(model);
   headBone = bones.mixamorig_Head || Object.values(bones).find(b => /head/i.test(b.name));
   mixer = new THREE.AnimationMixer(model);
@@ -74,11 +80,49 @@ new GLTFLoader().setDRACOLoader(new DRACOLoader().setDecoderPath('./draco/')).lo
     const cur = dir.clone().multiplyScalar(len).applyMatrix4(b.matrixWorld);
     return { b, rest: b.quaternion.clone(), dir, len, cur, prev: cur.clone() }; })); }
   for (const n of ACTS) if (acts[n]) button(n.toUpperCase(), () => play(n, .25));
+  button('TALK', () => talk());
+  button('MIC', b => mic(b));
+  for (const n of VIS) button(n === 'jawOpen' ? 'OPEN' : n, b => { const on = !b.classList.contains('on'); for (const x of ui.querySelectorAll('.vis')) x.classList.remove('on'); held = on ? n : ''; if (on) b.classList.add('on'); }, 'vis');
   button('SPRING ON', b => { SPRING.on = SPRING.on ? 0 : 1; b.textContent = SPRING.on ? 'SPRING ON' : 'SPRING OFF'; b.classList.toggle('on', !!SPRING.on);
     if (!SPRING.on) for (const ch of chains) for (const s of ch) s.b.quaternion.copy(s.rest); }, 'on');
   chip.textContent = chains.length + ' spike chains · ' + g.animations.length + ' clips';
 }, undefined, e => { chip.textContent = 'load failed'; console.error(e); });
 
+// THE MOUTH DRIVER: `want` is what the mouth is asked for this frame, `mouth` follows it with a quick ease, every mesh carrying
+// the shape keys gets the same values (skin, cavity, tongue)
+let held = '', speech = null, micA = null;
+const LET = { a: 'AI', i: 'AI', e: 'E', o: 'O', u: 'U', w: 'U', q: 'U', m: 'MBP', b: 'MBP', p: 'MBP', f: 'FV', v: 'FV', l: 'L', t: 'L', d: 'L', n: 'L', y: 'E' };
+const LINES = ['Hi! I am so happy you are here!', 'Do you want to be friends? I have so many feathers!', 'Wow, look at my hair go when I spin!',
+  'I like dancing, snacks, and big warm hugs.', 'Hello hello hello! Who are you?', 'I was made from a picture, can you believe it?'];
+function talk() {
+  if (!('speechSynthesis' in window)) { chip.textContent = 'no speech voice in this browser'; return; }
+  speechSynthesis.cancel(); const text = LINES[(Math.random() * LINES.length) | 0], u = new SpeechSynthesisUtterance(text);
+  u.pitch = 1.8; u.rate = 1.02; const vs = speechSynthesis.getVoices(); const v = vs.find(v => /en/i.test(v.lang) && /child|junior|samantha|google us/i.test(v.name)) || vs.find(v => /^en/i.test(v.lang)); if (v) u.voice = v;
+  // letters -> visemes on a clock; re-synced to each word as the voice reaches it (where the browser reports word boundaries)
+  const seq = (from) => { const out = []; for (const ch of text.slice(from).toLowerCase()) out.push(ch === ' ' || /[.,!?]/.test(ch) ? '' : LET[ch] || 'etc'); return out; };
+  speech = { seq: seq(0), t0: performance.now(), per: 72, on: 1 };
+  u.onboundary = e => { if (e.name === 'word' && speech) { speech.seq = seq(e.charIndex); speech.t0 = performance.now(); } };
+  u.onend = () => { speech = null; play('idle', .4); };
+  speechSynthesis.speak(u); play('talk', .3);
+}
+async function mic(b) {
+  if (micA) { micA.stream.getTracks().forEach(t => t.stop()); micA.ctx.close(); micA = null; b.classList.remove('on'); return; }
+  try { const stream = await navigator.mediaDevices.getUserMedia({ audio: true }), ctx = new AudioContext(), an = ctx.createAnalyser(); an.fftSize = 1024;
+    ctx.createMediaStreamSource(stream).connect(an); micA = { stream, ctx, an, buf: new Float32Array(an.fftSize), fq: new Uint8Array(an.frequencyBinCount) }; b.classList.add('on'); }
+  catch (e) { chip.textContent = 'no microphone'; }
+}
+function mouthStep(dt) {
+  for (const n of VIS) want[n] = 0;
+  want.smile = .15;
+  if (held) want[held] = 1;
+  else if (speech) { const i = Math.floor((performance.now() - speech.t0) / speech.per), v = speech.seq[Math.min(i, speech.seq.length - 1)]; if (v) want[v] = .9; }
+  else if (micA) { micA.an.getFloatTimeDomainData(micA.buf); let r = 0; for (const x of micA.buf) r += x * x; r = Math.sqrt(r / micA.buf.length);
+    micA.an.getByteFrequencyData(micA.fq); let c = 0, w = 0; for (let i = 2; i < 120; i++) { c += i * micA.fq[i]; w += micA.fq[i]; } const bright = w ? c / w / 60 : 0;
+    const o = Math.min(1, Math.max(0, (r - .015) * 9)); if (o > .05) { want[bright > .7 ? 'E' : bright < .35 ? 'O' : 'AI'] = o; } }
+  const e = 1 - Math.exp(-dt * 20);
+  for (const n of VIS) mouth[n] += (want[n] - mouth[n]) * e;
+  for (const m of morphs) for (const n of VIS) { const i = m.morphTargetDictionary[n]; if (i !== undefined) m.morphTargetInfluences[i] = mouth[n]; }
+}
 function play(n, fade) {
   const a = acts[n]; if (!a) return; const was = acts[cur];
   a.reset().setEffectiveWeight(1).fadeIn(fade).play(); if (was && was !== a) was.fadeOut(fade); cur = n;
@@ -116,7 +160,7 @@ function frame(now) {
       if (L < .08) { M.goal = null; if (cur === 'walk' || cur === 'run') play('idle', .3); }
       else { const sp = M.run ? 3.2 : 1.25; root.position.addScaledVector(d.normalize(), Math.min(L, sp * dt)); M.face = Math.atan2(d.x, d.z); } }
     root.rotation.y += Math.atan2(Math.sin(M.face - root.rotation.y), Math.cos(M.face - root.rotation.y)) * Math.min(1, dt * 7);
-    mixer.update(dt);
+    mixer.update(dt); mouthStep(dt);
     root.updateMatrixWorld(true); springs(dt);
     controls.target.lerp(_w.set(root.position.x, 1, root.position.z), .05); sun.position.set(root.position.x + 3, 6, root.position.z + 4); sun.target.position.copy(root.position);
   }
@@ -124,7 +168,7 @@ function frame(now) {
 }
 requestAnimationFrame(frame);
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
-window.cr = { SPRING, chains, bones, acts, play, M, scene, camera, renderer, THREE };
+window.cr = { SPRING, chains, bones, acts, play, M, scene, camera, renderer, THREE, mouth, want, morphs, talk, setHeld: n => { held = n; } };
 </script>
 </body>
 </html>
