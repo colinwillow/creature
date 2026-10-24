@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Creature</title>
+<style>
+  :root { --bg: #f4f5f7; --ink: #2a2d33; --chip: rgba(255,255,255,.88); }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; touch-action: none; font-family: -apple-system, system-ui, sans-serif; color: var(--ink); }
+  canvas { display: block; }
+  #ui { position: fixed; left: 0; right: 0; bottom: max(14px, env(safe-area-inset-bottom)); display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; padding: 0 16px; }
+  #ui button { border: 0; border-radius: 999px; padding: 10px 14px; font: 600 13px/1 system-ui; background: var(--chip); color: var(--ink); box-shadow: 0 2px 10px rgba(0,0,0,.08); }
+  #ui button.on { background: var(--ink); color: #fff; }
+  #chip { position: fixed; left: 16px; top: max(14px, env(safe-area-inset-top)); font: 600 12px/1.4 ui-monospace, monospace; color: #8a909a; white-space: pre; }
+  #build { position: fixed; right: 16px; top: max(10px, env(safe-area-inset-top)); font: 800 22px/1 system-ui; color: #39c6ff; }
+</style>
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.min.js" } }</script>
+</head>
+<body>
+<div id="chip">loading</div>
+<div id="build"></div>
+<div id="ui"></div>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from './vendor/GLTFLoader.js';
+import { DRACOLoader } from './vendor/DRACOLoader.js';
+import { OrbitControls } from './vendor/OrbitControls.js';
+
+// THE CREATURE. His Tripo mesh, auto-rigged (Auto-Rig Pro, headless, renamed to Mixamo), a 3-bone spring chain on each of 24 spikes
+// of his crest (blender-addons/pipeline/spikes.py), and 15 Mixamo clips baked onto him by the Forge (retarget-anims profile
+// `creature`). The clips drive his body; SPRINGS drive the spikes, every frame after the clip: inertia, a pull back to rest, a
+// little gravity, and a sphere round his head they cannot pass through, so spikes that already lie flat rest on him.
+// Tap the floor and he walks (near) or runs (far) there. `window.cr` has everything live.
+const BUILD = 2;
+const SPRING = { on: 1, stiff: 3.2, drag: .38, grav: .9, height: 1.8, headR: 1.15, maxBend: .7 };
+const ACTS = ['wave', 'laugh', 'dance', 'chicken', 'excited', 'clap', 'talk', 'shrug', 'jump', 'victory', 'yawn', 'think'];
+const LOOPS = new Set(['idle', 'walk', 'run']);
+document.getElementById('build').textContent = BUILD;
+const chip = document.getElementById('chip');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(2, devicePixelRatio)); renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace; renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0xf4f5f7); scene.fog = new THREE.Fog(0xf4f5f7, 12, 40);
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, .05, 100); camera.position.set(0, 1.5, 4.8);
+const controls = new OrbitControls(camera, renderer.domElement); controls.target.set(0, 1, 0); controls.enableDamping = true; controls.enablePan = false;
+scene.add(new THREE.HemisphereLight(0xffffff, 0xdfe3e8, 1.6));
+const sun = new THREE.DirectionalLight(0xffffff, 2.2); sun.position.set(3, 6, 4); sun.castShadow = true; sun.shadow.mapSize.set(1024, 1024);
+Object.assign(sun.shadow.camera, { left: -4, right: 4, top: 4, bottom: -4 }); scene.add(sun, sun.target);
+const floor = new THREE.Mesh(new THREE.CircleGeometry(30, 64), new THREE.MeshStandardMaterial({ color: 0xf4f5f7, roughness: .9 }));
+floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+const ring = new THREE.Mesh(new THREE.RingGeometry(1.1, 1.13, 96), new THREE.MeshBasicMaterial({ color: 0xd5d9df })); ring.rotation.x = -Math.PI / 2; ring.position.y = .002; scene.add(ring);
+
+const root = new THREE.Group(); scene.add(root);
+let model, mixer, acts = {}, cur = 'idle', bones = {}, chains = [], headBone = null, k = 1;
+const ui = document.getElementById('ui');
+function button(label, fn, cls) { const b = document.createElement('button'); b.textContent = label; if (cls) b.className = cls; b.onclick = () => fn(b); ui.appendChild(b); return b; }
+
+new GLTFLoader().setDRACOLoader(new DRACOLoader().setDecoderPath('./draco/')).load('./models/creature.glb?v=' + BUILD, g => {
+  model = g.scene; const bb = new THREE.Box3();
+  model.traverse(o => { if (o.isBone) bones[o.name] = o; if (o.isMesh) { o.castShadow = true; o.frustumCulled = false; o.geometry.computeBoundingBox(); bb.union(o.geometry.boundingBox); } });
+  k = SPRING.height / (bb.max.y - bb.min.y || .68); model.scale.setScalar(k); root.add(model);
+  headBone = bones.mixamorig_Head || Object.values(bones).find(b => /head/i.test(b.name));
+  mixer = new THREE.AnimationMixer(model);
+  for (const c of g.animations) { const a = mixer.clipAction(c); if (!LOOPS.has(c.name)) { a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true; } acts[c.name] = a; }
+  mixer.addEventListener('finished', e => { if (e.action === acts[cur]) play(M.goal ? 'walk' : 'idle', .35); });
+  play('idle', 0);
+  // the chains: spike_<k>_<j>, in order, measured in the bind pose
+  const by = {}; for (const n in bones) { const m = n.match(/^spike_(\d+)_(\d+)$/); if (m) (by[m[1]] = by[m[1]] || [])[+m[2]] = bones[n]; }
+  model.updateMatrixWorld(true);
+  for (const key in by) { const list = by[key]; chains.push(list.map((b, j) => {
+    const nx = list[j + 1], tail = nx ? nx.position.clone() : b.position.clone().applyQuaternion(b.quaternion.clone().invert());
+    const len = tail.length(), dir = tail.clone().normalize(); b.updateMatrixWorld(true);
+    const cur = dir.clone().multiplyScalar(len).applyMatrix4(b.matrixWorld);
+    return { b, rest: b.quaternion.clone(), dir, len, cur, prev: cur.clone() }; })); }
+  for (const n of ACTS) if (acts[n]) button(n.toUpperCase(), () => play(n, .25));
+  button('SPRING ON', b => { SPRING.on = SPRING.on ? 0 : 1; b.textContent = SPRING.on ? 'SPRING ON' : 'SPRING OFF'; b.classList.toggle('on', !!SPRING.on);
+    if (!SPRING.on) for (const ch of chains) for (const s of ch) s.b.quaternion.copy(s.rest); }, 'on');
+  chip.textContent = chains.length + ' spike chains · ' + g.animations.length + ' clips';
+}, undefined, e => { chip.textContent = 'load failed'; console.error(e); });
+
+function play(n, fade) {
+  const a = acts[n]; if (!a) return; const was = acts[cur];
+  a.reset().setEffectiveWeight(1).fadeIn(fade).play(); if (was && was !== a) was.fadeOut(fade); cur = n;
+}
+// tap the floor: he goes there, walking when it is near, running when it is far
+const M = { goal: null, face: 0 };
+const ray = new THREE.Raycaster(), ptr = new THREE.Vector2(); let down = null;
+renderer.domElement.addEventListener('pointerdown', e => { down = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+renderer.domElement.addEventListener('pointerup', e => { if (!down) return; const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+  if (moved < 8 && performance.now() - down.t < 300) { ptr.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1); ray.setFromCamera(ptr, camera);
+    const h = ray.intersectObject(floor)[0]; if (h) { M.goal = h.point.clone(); M.run = h.point.distanceTo(root.position) > 3.5; play(M.run ? 'run' : 'walk', .25); } } down = null; });
+
+const _v = new THREE.Vector3(), _w = new THREE.Vector3(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _c = new THREE.Vector3(), G = new THREE.Vector3(0, -1, 0);
+function springs(dt) {
+  if (!SPRING.on || !headBone) return;
+  headBone.getWorldPosition(_c); _c.y += .03 * k; const R = .071 * k * SPRING.headR;
+  for (const ch of chains) for (const s of ch) {
+    const b = s.b; b.parent.getWorldQuaternion(_q); _q.multiply(s.rest);           // the rest frame, in the world
+    const head = b.getWorldPosition(_w).clone(), restDir = _v.copy(s.dir).applyQuaternion(_q), L = s.len * k;
+    const next = s.cur.clone().addScaledVector(s.cur.clone().sub(s.prev), 1 - SPRING.drag)
+      .addScaledVector(restDir, SPRING.stiff * L * dt * 60 * dt).addScaledVector(G, SPRING.grav * L * dt * dt * 60);
+    next.sub(head).setLength(L).add(head);
+    const off = next.clone().sub(_c), dd = off.length(); if (dd < R) next.copy(_c).addScaledVector(off.normalize(), R).sub(head).setLength(L).add(head);
+    s.prev.copy(s.cur); s.cur.copy(next);
+    let want = next.clone().sub(head).applyQuaternion(_q.clone().invert()).normalize();
+    const ang = want.angleTo(s.dir); if (ang > SPRING.maxBend) want = s.dir.clone().lerp(want, SPRING.maxBend / ang).normalize();     // a spike bends, it does not fold
+    b.quaternion.copy(s.rest).multiply(_q2.setFromUnitVectors(s.dir, want)); b.updateMatrixWorld(true);
+  }
+}
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(.033, (now - last) / 1000); last = now;
+  if (model) {
+    if (M.goal) { const d = _v.copy(M.goal).sub(root.position); d.y = 0; const L = d.length();
+      if (L < .08) { M.goal = null; if (cur === 'walk' || cur === 'run') play('idle', .3); }
+      else { const sp = M.run ? 3.2 : 1.25; root.position.addScaledVector(d.normalize(), Math.min(L, sp * dt)); M.face = Math.atan2(d.x, d.z); } }
+    root.rotation.y += Math.atan2(Math.sin(M.face - root.rotation.y), Math.cos(M.face - root.rotation.y)) * Math.min(1, dt * 7);
+    mixer.update(dt);
+    root.updateMatrixWorld(true); springs(dt);
+    controls.target.lerp(_w.set(root.position.x, 1, root.position.z), .05); sun.position.set(root.position.x + 3, 6, root.position.z + 4); sun.target.position.copy(root.position);
+  }
+  controls.update(); renderer.render(scene, camera); requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+window.cr = { SPRING, chains, bones, acts, play, M, scene, camera, renderer, THREE };
+</script>
+</body>
+</html>
