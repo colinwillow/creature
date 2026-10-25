@@ -36,7 +36,7 @@ import { OrbitControls } from './vendor/OrbitControls.js';
 // visemes AI E O U MBP FV L etc, and smile / frown. TALK speaks a line in the browser's own voice (pitched up, no keys) and drives
 // the visemes from the letters of each word as it is spoken; MIC drives the jaw from your voice's loudness. The real voice
 // (speech to text -> a Claude brain -> ElevenLabs) is a later step and needs a server for the keys.
-const BUILD = 3;
+const BUILD = 4;
 const SPRING = { on: 1, stiff: 3.2, drag: .38, grav: .9, height: 1.8, headR: 1.15, maxBend: .7 };
 const ACTS = ['wave', 'laugh', 'dance', 'chicken', 'excited', 'clap', 'talk', 'shrug', 'jump', 'victory', 'yawn', 'think'];
 const LOOPS = new Set(['idle', 'walk', 'run']);
@@ -85,6 +85,13 @@ new GLTFLoader().setDRACOLoader(new DRACOLoader().setDecoderPath('./draco/')).lo
   for (const n of VIS) button(n === 'jawOpen' ? 'OPEN' : n, b => { const on = !b.classList.contains('on'); for (const x of ui.querySelectorAll('.vis')) x.classList.remove('on'); held = on ? n : ''; if (on) b.classList.add('on'); }, 'vis');
   button('SPRING ON', b => { SPRING.on = SPRING.on ? 0 : 1; b.textContent = SPRING.on ? 'SPRING ON' : 'SPRING OFF'; b.classList.toggle('on', !!SPRING.on);
     if (!SPRING.on) for (const ch of chains) for (const s of ch) s.b.quaternion.copy(s.rest); }, 'on');
+  // build 4: HIS DE-LIT TEXTURE (the same albedo with the baked lighting taken out), on a switch over the one in the GLB. Same UVs.
+  // It opens on the new one; TEX LIT puts the GLB's back. His 4096 jpg is the source; the page loads a 2048 webp of it.
+  let skin = null; model.traverse(o => { if (o.isSkinnedMesh && o.material.map && (!skin || o.geometry.attributes.position.count > skin.geometry.attributes.position.count)) skin = o; }); const litMap = skin && skin.material.map;
+  let unlitMap = null; const setTex = u => { if (!skin) return; skin.material.map = u ? unlitMap : litMap; skin.material.needsUpdate = true; };
+  new THREE.TextureLoader().load('./models/creature_unlit.webp?v=' + BUILD, t => { t.flipY = false; t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = renderer.capabilities.getMaxAnisotropy(); unlitMap = t; if (texB.classList.contains('on')) setTex(1); });
+  const texB = button('TEX UNLIT', b => { const u = !b.classList.contains('on'); b.classList.toggle('on', u); b.textContent = u ? 'TEX UNLIT' : 'TEX LIT'; setTex(u); }, 'on');
   chip.textContent = chains.length + ' spike chains · ' + g.animations.length + ' clips';
 }, undefined, e => { chip.textContent = 'load failed'; console.error(e); });
 
