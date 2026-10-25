@@ -36,7 +36,7 @@ import { OrbitControls } from './vendor/OrbitControls.js';
 // visemes AI E O U MBP FV L etc, and smile / frown. TALK speaks a line in the browser's own voice (pitched up, no keys) and drives
 // the visemes from the letters of each word as it is spoken; MIC drives the jaw from your voice's loudness. The real voice
 // (speech to text -> a Claude brain -> ElevenLabs) is a later step and needs a server for the keys.
-const BUILD = 4;
+const BUILD = 5;
 const SPRING = { on: 1, stiff: 3.2, drag: .38, grav: .9, height: 1.8, headR: 1.15, maxBend: .7 };
 const ACTS = ['wave', 'laugh', 'dance', 'chicken', 'excited', 'clap', 'talk', 'shrug', 'jump', 'victory', 'yawn', 'think'];
 const LOOPS = new Set(['idle', 'walk', 'run']);

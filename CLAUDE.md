@@ -18,6 +18,8 @@ to talk with. Single page, three.js r180 vendored in `vendor/`, native ES module
 
 - The source is `models/source/creature_01.zip` (his Tripo FBX + texture). The rig is ARP renamed to `mixamorig_*`, 24 crest
   chains `spike_<k>_<j>` (3 bones each). Clips are Mixamo, baked by the Forge (private library; never commit raw Mixamo files).
+- Spike weight is GATED by how far fur stands out from the skull (spikes.py `GATE`, build 5): a chain root sits inside the skull, so
+  scalp fur weighted to it bent his head whenever a spring moved.
 - Springs, not clips, drive the spikes (`springs()` in index.html): inertia, a pull to rest, gravity, a head-sphere collider,
   a bend limit. `window.cr.SPRING` is live.
 
